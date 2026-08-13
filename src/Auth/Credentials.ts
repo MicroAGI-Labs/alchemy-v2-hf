@@ -170,6 +170,22 @@ const redact = (
   Redacted.isRedacted(token) ? token : Redacted.make(token);
 
 /**
+ * Drop trailing `/` characters.
+ *
+ * Deliberately a loop rather than `.replace(/\/+$/, "")`: that pattern is
+ * anchored only at the end, so the engine retries from every start position
+ * and degrades to O(n²) on a value that is mostly slashes (CodeQL
+ * `js/polynomial-redos`). Same result, linear, no backtracking.
+ *
+ * @internal
+ */
+const stripTrailingSlashes = (value: string): string => {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47 /* "/" */) end -= 1;
+  return value.slice(0, end);
+};
+
+/**
  * Strip trailing slashes so path concatenation never produces `//api/...`,
  * which the Hub's router treats as a distinct (404) path, and validate that
  * what is left is an absolute `http`/`https` URL.
@@ -189,7 +205,7 @@ export const normalizeEndpoint = (
   /** Name used in the error message — an env var, or the parameter. */
   source = "endpoint",
 ): Effect.Effect<string, ConfigError> => {
-  const trimmed = endpoint.trim().replace(/\/+$/, "");
+  const trimmed = stripTrailingSlashes(endpoint.trim());
   if (trimmed.length === 0) return Effect.succeed(DEFAULT_ENDPOINT);
 
   const fail = Effect.fail(
