@@ -86,12 +86,13 @@ export const fromEnv = (options?: FromEnvOptions) =>
             }),
         ),
       );
-      const endpoint = yield* Config.string(
-        options?.endpointEnv ?? "HF_ENDPOINT",
-      ).pipe(Effect.orElseSucceed(() => DEFAULT_ENDPOINT));
+      const endpointVar = options?.endpointEnv ?? "HF_ENDPOINT";
+      const endpoint = yield* Config.string(endpointVar).pipe(
+        Effect.orElseSucceed(() => DEFAULT_ENDPOINT),
+      );
       return {
         token,
-        endpoint: normalizeEndpoint(endpoint),
+        endpoint: yield* normalizeEndpoint(endpoint, endpointVar),
       } satisfies HuggingFaceCredentials;
     }),
   );
@@ -105,16 +106,55 @@ export const fromToken = (
   token: Redacted.Redacted<string> | string,
   endpoint = DEFAULT_ENDPOINT,
 ) =>
-  Layer.succeed(Credentials, {
-    token: Redacted.isRedacted(token) ? token : Redacted.make(token),
-    endpoint: normalizeEndpoint(endpoint),
-  } satisfies HuggingFaceCredentials);
+  Layer.effect(
+    Credentials,
+    Effect.map(
+      normalizeEndpoint(endpoint),
+      (normalized) =>
+        ({
+          token: Redacted.isRedacted(token) ? token : Redacted.make(token),
+          endpoint: normalized,
+        }) satisfies HuggingFaceCredentials,
+    ),
+  );
 
 /**
  * Strip trailing slashes so path concatenation never produces `//api/...`,
- * which the Hub's router treats as a distinct (404) path.
+ * which the Hub's router treats as a distinct (404) path, and validate that
+ * what is left is an absolute `http`/`https` URL.
+ *
+ * The validation is not cosmetic. `HubClient` composes the request URL with
+ * `new URL(`${endpoint}${path}`)`, which **throws** on a scheme-less value
+ * like `huggingface.co`. A throw inside `Effect.gen` is an unhandled defect,
+ * not a typed failure, so it escapes every `catchTag` the rest of the
+ * package relies on and surfaces as an opaque crash. Failing here keeps a
+ * misconfigured endpoint in the typed {@link ConfigError} channel, where the
+ * message can name the variable and show the expected shape.
  *
  * @internal
  */
-export const normalizeEndpoint = (endpoint: string): string =>
-  endpoint.replace(/\/+$/, "") || DEFAULT_ENDPOINT;
+export const normalizeEndpoint = (
+  endpoint: string,
+  /** Name used in the error message — an env var, or the parameter. */
+  source = "endpoint",
+): Effect.Effect<string, ConfigError> => {
+  const trimmed = endpoint.trim().replace(/\/+$/, "");
+  if (trimmed.length === 0) return Effect.succeed(DEFAULT_ENDPOINT);
+
+  const fail = Effect.fail(
+    new ConfigError({
+      message:
+        `Invalid Hugging Face endpoint ${JSON.stringify(endpoint)} (from ${source}): ` +
+        `it must be an absolute http/https URL, e.g. ${DEFAULT_ENDPOINT}.`,
+    }),
+  );
+
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return fail;
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return fail;
+  return Effect.succeed(trimmed);
+};

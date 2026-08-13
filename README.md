@@ -90,7 +90,7 @@ Outputs: `{ tokenId, displayName, value: Redacted<string>, version }`.
 - The value is persisted in Alchemy state as `Redacted<string>`. Alchemy's state encoder round-trips `Redacted` losslessly (its `__redacted__` marker), so the real value survives while staying opaque to logs and plan output. This is the same pattern as `SeededSecret` in the research-infra stack and `Cloudflare.Calls.App.secret` upstream.
 - **Scope changes update in place** via `PATCH`; the persisted value carries forward untouched.
 - **Rotation is driven by `version`.** Bump it (default `1`) and the next deploy rotates: the Hub mints a new value, and the old one stops working *immediately*. The committed bump is the audit trail.
-- **Losing state loses the value.** The token still exists on the Hub, but nothing can recover its plaintext. The reconciler detects this and fails with an explicit instruction to bump `version` rather than persisting an empty secret that would fail confusingly at use time.
+- **Losing state loses the value.** The token still exists on the Hub, but nothing can recover its plaintext — and **bumping `version` does not help**, because rotation only fires for a token this stack already has state for. The reconciler detects the situation and fails loudly rather than persisting an empty secret that would fail confusingly at use time, and rather than rotating a token that live consumers may be using this second. To recover, either delete the token in the Hub UI and re-deploy, or change `displayName`; both make the next deploy mint a fresh token.
 - Only `organization` and `serviceAccountId` are immutable; changing either replaces.
 
 `permissions` is the closed 13-value enum (`repo.content.read`, `repo.write`, `inference.serverless.write`, `inference.endpoints.infer.write`, `inference.endpoints.write`, `org.read`, `org.write`, `collection.read`, `collection.write`, `resourceGroup.write`, `job.write`, `org.serviceAccounts.read`, `org.serviceAccounts.write`). `repoIds` + `repoPermissions` override the org-wide `permissions` for the listed repos. `endpointPatterns` is capped at 20 entries of ≤256 characters. All of this is validated locally, before any request.
@@ -115,7 +115,7 @@ Outputs: `{ bucketId, fullName, namespace, name, url }`.
 | Prop | Mutability |
 |---|---|
 | `namespace`, `name` | identity — replaces |
-| `region` | **immutable** — replaces (data cannot move between regions) |
+| `region` | **immutable** — replaces (data cannot move between regions); setting it on a bucket that never declared one also replaces |
 | `private`, `cdn` | mutable via `PUT .../settings` |
 | `resourceGroupId` | mutable via `POST .../resource-group`; clearing it detaches |
 

@@ -155,6 +155,41 @@ describe("token operations", () => {
     expect(calls).toHaveLength(0);
   });
 
+  test("a create response without tokenInfo fails rather than fabricating an id", async () => {
+    // An empty `tokenId` would reach state, after which `findToken` degrades
+    // to displayName matching and `deleteToken` issues `DELETE .../tokens/`
+    // — a 404 the reconciler absorbs, so the token would never be revoked.
+    const { layer } = stubHub(() => ({ status: 201, body: { token: "hf_x" } }));
+
+    const failure = await Effect.runPromise(
+      createToken({
+        organization: ORG,
+        serviceAccountId: SA,
+        body: { displayName: "trainer" },
+      }).pipe(Effect.flip, Effect.provide(layer)),
+    );
+
+    expect(failure._tag).toBe("DecodeError");
+    expect(failure.message).toContain("tokenInfo._id");
+  });
+
+  test("a rotate response without a token value fails", async () => {
+    const { layer } = stubHub(() => ({
+      status: 200,
+      body: { tokenInfo: { _id: "tok_1", displayName: "trainer", createdAt: "" } },
+    }));
+
+    const failure = await Effect.runPromise(
+      rotateToken({
+        organization: ORG,
+        serviceAccountId: SA,
+        tokenId: "tok_1",
+      }).pipe(Effect.flip, Effect.provide(layer)),
+    );
+
+    expect(failure._tag).toBe("DecodeError");
+  });
+
   test("patch targets the token and does not yield a new value", async () => {
     const { layer, calls } = stubHub(() => ({
       status: 200,
@@ -219,18 +254,18 @@ describe("token operations", () => {
     expect(calls[0]!.path).not.toContain("revoke");
   });
 
-  test("findToken matches on _id, then falls back to displayName", async () => {
-    const account = {
-      _id: SA,
-      user: "u",
-      name: "trainer",
-      createdAt: "",
-      accessTokens: [
-        { _id: "tok_1", displayName: "old-name", createdAt: "" },
-        { _id: "tok_2", displayName: "trainer", createdAt: "" },
-      ],
-    };
+  const accountWithTwoTokens = {
+    _id: SA,
+    user: "u",
+    name: "trainer",
+    createdAt: "",
+    accessTokens: [
+      { _id: "tok_1", displayName: "old-name", createdAt: "" },
+      { _id: "tok_2", displayName: "trainer", createdAt: "" },
+    ],
+  };
 
+  test("findToken matches on _id, ignoring displayName", async () => {
     const byId = await runStub(
       findToken({
         organization: ORG,
@@ -238,20 +273,37 @@ describe("token operations", () => {
         tokenId: "tok_1",
         displayName: "trainer",
       }),
-      stubHub(() => ({ status: 200, body: account })).layer,
+      stubHub(() => ({ status: 200, body: accountWithTwoTokens })).layer,
     );
     expect(byId?._id).toBe("tok_1");
+  });
 
+  test("findToken scans displayName only when no id is known", async () => {
     const byName = await runStub(
+      findToken({
+        organization: ORG,
+        serviceAccountId: SA,
+        displayName: "trainer",
+      }),
+      stubHub(() => ({ status: 200, body: accountWithTwoTokens })).layer,
+    );
+    expect(byName?._id).toBe("tok_2");
+  });
+
+  test("a supplied id that does not match reports absent, never a same-named token", async () => {
+    // If this fell back to the name it would return tok_2, and the reconciler
+    // would pair tok_2's id with the DELETED token's plaintext (still sitting
+    // in state) — a credential that looks valid and fails at use time.
+    const gone = await runStub(
       findToken({
         organization: ORG,
         serviceAccountId: SA,
         tokenId: "gone",
         displayName: "trainer",
       }),
-      stubHub(() => ({ status: 200, body: account })).layer,
+      stubHub(() => ({ status: 200, body: accountWithTwoTokens })).layer,
     );
-    expect(byName?._id).toBe("tok_2");
+    expect(gone).toBeUndefined();
   });
 
   test("findToken never surfaces a token value — the Hub does not store one", async () => {

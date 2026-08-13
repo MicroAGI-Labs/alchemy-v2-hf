@@ -34,9 +34,12 @@ import type * as HF from "./Providers.ts";
  *
  * Consequences worth internalising:
  *
- * - Losing state loses the value. The token still exists on the Hub, but it
- *   cannot be recovered — bump {@link ServiceAccountTokenProps.version} to
- *   rotate and obtain a fresh one.
+ * - Losing state loses the value. The token still exists on the Hub, but no
+ *   endpoint will disclose its plaintext again and bumping
+ *   {@link ServiceAccountTokenProps.version} does not recover it. The
+ *   reconciler refuses to proceed rather than rotate a token that live
+ *   consumers may be using; delete the token in the Hub UI, or change
+ *   `displayName`, and re-deploy to mint a fresh one.
  * - Rotation invalidates the previous value **immediately**. Anything still
  *   holding it starts failing the moment the deploy lands.
  *
@@ -212,12 +215,22 @@ export const diffTokenProps = (
  */
 export const serviceAccountTokenService = {
   nuke: { skip: true },
-  // `value` is stable in the engine's sense: it is set on create/rotate and
-  // can never be re-read from the API, so the engine must carry it forward
-  // rather than treat its absence from a read as drift.
-  stables: ["tokenId", "value"] satisfies Array<
-    keyof ServiceAccountToken["Attributes"]
-  >,
+  // Deliberately empty. `stables` is NOT about state persistence — it tells
+  // the planner which attributes downstream references may resolve to their
+  // OLD concrete values at plan time (see `Plan.ts`'s `withStables`, and
+  // `Output.ts`, where the proxy hands back that literal instead of a
+  // `PropExpr`). Neither attribute here qualifies:
+  //
+  // - `value` changes on every rotation. Listing it would hand every
+  //   consumer in the same deploy the PRE-rotation plaintext — already
+  //   invalidated by `rotateToken` — as a literal, which additionally
+  //   carries no dependency edge to force ordering.
+  // - `tokenId` changes on the re-mint path, when the token was deleted out
+  //   of band and this reconciler creates a fresh one.
+  //
+  // Carrying `value` forward in state does not depend on this: `reconcile`
+  // returns it explicitly on every path.
+  stables: [] satisfies Array<keyof ServiceAccountToken["Attributes"]>,
   list: () => Effect.succeed([]),
   diff: Effect.fn(function* ({ news, olds }) {
     if (!isResolved(news)) return undefined;
@@ -251,56 +264,19 @@ export const serviceAccountTokenService = {
         displayName: news.displayName,
         value: issued.value,
         version,
-};
-      }
+      };
+    }
 
-      // 3a. Rotate when the version counter moved. Rotation preserves the
-      //     token id and its scope, and invalidates the old value at once.
-      if (output !== undefined && output.version !== version) {
-        const issued = yield* rotateToken({
-          organization: news.organization,
-          serviceAccountId: news.serviceAccountId,
-          tokenId: observed._id,
-        });
-        // Scope may also have changed in the same deploy; apply it after
-        // rotating so both land.
-        if (!tokenScopeMatches(news, observed)) {
-          yield* patchToken({
-            organization: news.organization,
-            serviceAccountId: news.serviceAccountId,
-            tokenId: observed._id,
-            body: buildTokenBody(news),
-          });
-        }
-        return {
-          tokenId: issued.tokenId || observed._id,
-          displayName: news.displayName,
-          value: issued.value,
-          version,
-        };
-      }
-
-      // 3b. The token exists but its value is not in state. The Hub cannot
-      //     disclose it again, so there is nothing to converge on — refuse
-      //     loudly instead of persisting an empty secret that would fail at
-      //     use time with a far more confusing error.
-      if (output?.value === undefined) {
-        return yield* Effect.fail(
-          new ConfigError({
-            message:
-              `Token "${news.displayName}" (${observed._id}) exists on service account ` +
-              `${news.serviceAccountId} but its value is not in Alchemy state, and the ` +
-              `Hub discloses a token value only when it is minted or rotated. ` +
-              `Bump \`version\` (currently ${version}) to rotate and obtain a usable value — ` +
-              `note that this invalidates the existing token immediately — or delete the ` +
-              `token in the Hub UI and re-deploy to mint a fresh one.`,
-          }),
-        );
-      }
-
-      // 3c. Sync scope in place. Diffed against observed state, so an
-      //     out-of-band edit converges back. The PATCH does not mint a new
-      //     value, so the persisted one carries forward untouched.
+    // 3a. Rotate when the version counter moved. Rotation preserves the
+    //     token id and its scope, and invalidates the old value at once.
+    if (output !== undefined && output.version !== version) {
+      const issued = yield* rotateToken({
+        organization: news.organization,
+        serviceAccountId: news.serviceAccountId,
+        tokenId: observed._id,
+      });
+      // Scope may also have changed in the same deploy; apply it after
+      // rotating so both land.
       if (!tokenScopeMatches(news, observed)) {
         yield* patchToken({
           organization: news.organization,
@@ -309,56 +285,105 @@ export const serviceAccountTokenService = {
           body: buildTokenBody(news),
         });
       }
-
       return {
-        tokenId: observed._id,
+        tokenId: issued.tokenId,
         displayName: news.displayName,
-        value: output.value,
+        value: issued.value,
         version,
       };
-    }),
-    delete: Effect.fn(function* ({ olds, output }) {
-      yield* deleteToken({
-        organization: olds.organization,
-        serviceAccountId: olds.serviceAccountId,
-        tokenId: output.tokenId,
-      }).pipe(
-        Effect.catchTag("NotFound", () => Effect.void),
-        Effect.catchTag("Forbidden", () => Effect.void),
+    }
+
+    // 3b. The token exists but its value is not in state. The Hub cannot
+    //     disclose it again, so there is nothing to converge on — refuse
+    //     loudly instead of persisting an empty secret that would fail at
+    //     use time with a far more confusing error.
+    //
+    //     Rotating here instead would "fix" the deploy at the cost of
+    //     invalidating a token that live consumers (CSI mounts, running
+    //     jobs) are using this second, without anyone asking for it. Failing
+    //     is the correct behaviour; the remedies below both make the ensuing
+    //     mint explicit. Note in particular that bumping `version` does NOT
+    //     help — branch 3a is unreachable without an `output`, which is
+    //     precisely what is missing here.
+    if (output?.value === undefined) {
+      return yield* Effect.fail(
+        new ConfigError({
+          message:
+            `Token "${news.displayName}" (${observed._id}) exists on service account ` +
+            `${news.serviceAccountId} but its value is not in Alchemy state, and the ` +
+            `Hub discloses a token value only when it is minted or rotated. ` +
+            `Neither this deploy nor any later one can recover it, and bumping ` +
+            `\`version\` will not help. Either delete the token in the Hub UI and ` +
+            `re-deploy, or change \`displayName\` — both make the next deploy mint a ` +
+            `fresh token. Anything still holding the old value stops working when ` +
+            `the old token goes away, so revoke it only once its consumers are moved.`,
+        }),
       );
-    }),
-    read: Effect.fn(function* ({ olds, output }) {
-      const organization = olds?.organization;
-      const serviceAccountId = olds?.serviceAccountId;
-      if (!organization || !serviceAccountId) return undefined;
+    }
 
-      const observed = yield* findToken({
-        organization,
-        serviceAccountId,
-        tokenId: output?.tokenId,
-        displayName: output?.displayName ?? olds.displayName,
-      }).pipe(Effect.catchTag("NotFound", () => Effect.succeed(undefined)));
-      if (!observed) return undefined;
-
-      // A token whose value is absent from state cannot be described by a
-      // complete Attributes record — the Hub will not disclose the value
-      // again, and inventing an empty `Redacted` would hand downstream
-      // consumers a secret that silently fails at use time. Report it as
-      // not-readable; `reconcile` then observes the same token and fails
-      // with the actionable "bump `version` to rotate" message.
-      if (output?.value === undefined) return undefined;
-
-      // Deliberately NOT Unowned: a token exists on a service account only
-      // because this resource minted it, and the value in state is itself
-      // the proof of ownership — nobody else could hold it.
-      return {
+    // 3c. Sync scope in place. Diffed against observed state, so an
+    //     out-of-band edit converges back. The PATCH does not mint a new
+    //     value, so the persisted one carries forward untouched.
+    if (!tokenScopeMatches(news, observed)) {
+      yield* patchToken({
+        organization: news.organization,
+        serviceAccountId: news.serviceAccountId,
         tokenId: observed._id,
-        displayName: observed.displayName,
-        value: output.value,
-        version: output.version ?? olds.version ?? DEFAULT_VERSION,
-      };
-    }),
-  };
+        body: buildTokenBody(news),
+      });
+    }
+
+    return {
+      tokenId: observed._id,
+      displayName: news.displayName,
+      value: output.value,
+      version,
+    };
+  }),
+  delete: Effect.fn(function* ({ olds, output }) {
+    // `NotFound` is idempotent teardown and is absorbed. `Forbidden` is NOT:
+    // swallowing a 403 would drop the resource from state while the token
+    // stays live on the Hub, with nothing left pointing at it to revoke it
+    // later. For a secret-bearing resource an orphan is strictly worse than
+    // a failed destroy, so the error propagates.
+    yield* deleteToken({
+      organization: olds.organization,
+      serviceAccountId: olds.serviceAccountId,
+      tokenId: output.tokenId,
+    }).pipe(Effect.catchTag("NotFound", () => Effect.void));
+  }),
+  read: Effect.fn(function* ({ olds, output }) {
+    const organization = olds?.organization;
+    const serviceAccountId = olds?.serviceAccountId;
+    if (!organization || !serviceAccountId) return undefined;
+
+    const observed = yield* findToken({
+      organization,
+      serviceAccountId,
+      tokenId: output?.tokenId,
+      displayName: output?.displayName ?? olds.displayName,
+    }).pipe(Effect.catchTag("NotFound", () => Effect.succeed(undefined)));
+    if (!observed) return undefined;
+
+    // A token whose value is absent from state cannot be described by a
+    // complete Attributes record — the Hub will not disclose the value
+    // again, and inventing an empty `Redacted` would hand downstream
+    // consumers a secret that silently fails at use time. Report it as
+    // not-readable; `reconcile` then observes the same token and fails with
+    // the actionable message in branch 3b.
+    if (output?.value === undefined) return undefined;
+
+    // Deliberately NOT Unowned: a token exists on a service account only
+    // because this resource minted it, and the value in state is itself
+    // the proof of ownership — nobody else could hold it.
+    return {
+      tokenId: observed._id,
+      displayName: observed.displayName,
+      value: output.value,
+      version: output.version ?? olds.version ?? DEFAULT_VERSION,
+    };
+  }),
+};
 
 export const ServiceAccountTokenProvider = () =>
   Provider.succeed(ServiceAccountToken, serviceAccountTokenService);

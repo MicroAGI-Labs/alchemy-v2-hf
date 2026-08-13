@@ -129,6 +129,25 @@ describe("ServiceAccountToken diff", () => {
   });
 });
 
+describe("ServiceAccountToken stables", () => {
+  test("`value` is never stable — a stale secret must not be handed to consumers", () => {
+    // `stables` controls what a downstream `token.value` reference resolves
+    // to at PLAN time: the engine substitutes the OLD concrete value for any
+    // listed attribute (Plan.ts `withStables`, Output.ts's proxy). Since a
+    // `version` bump is an update, not a replace, listing `value` would hand
+    // every consumer in that deploy the pre-rotation plaintext — which
+    // `rotateToken` invalidated the moment it ran — as a literal, with no
+    // dependency edge to even order it correctly.
+    expect(serviceAccountTokenService.stables).not.toContain("value");
+  });
+
+  test("`tokenId` is not stable either — the re-mint path changes it", () => {
+    // When the token was deleted out of band, reconcile mints a fresh one
+    // with a new `_id`.
+    expect(serviceAccountTokenService.stables).not.toContain("tokenId");
+  });
+});
+
 describe("ServiceAccountToken reconcile", () => {
   test("greenfield mints a token and persists the value redacted", async () => {
     const { layer, calls } = stubHub((req) =>
@@ -290,7 +309,7 @@ describe("ServiceAccountToken reconcile", () => {
     ]);
   });
 
-  test("a token whose value is missing from state fails with rotation guidance", async () => {
+  test("a token whose value is missing from state fails with workable remedies", async () => {
     const { layer, calls } = stubHub(() => ({
       status: 200,
       body: accountWith(existingToken),
@@ -302,13 +321,74 @@ describe("ServiceAccountToken reconcile", () => {
       layer,
     );
 
+    const message = (failure as { message: string }).message;
     expect((failure as { _tag: string })._tag).toBe("ConfigError");
-    expect((failure as { message: string }).message).toContain(
-      "value is not in Alchemy state",
-    );
-    expect((failure as { message: string }).message).toContain("`version`");
+    expect(message).toContain("value is not in Alchemy state");
+    // The remedies must be ones that actually work. Bumping `version` is NOT
+    // one of them: branch 3a is gated on `output !== undefined`, and after
+    // state loss `read` returns undefined (no value in state) so nothing is
+    // adopted — the bumped deploy lands here again, identically. The message
+    // must therefore say so rather than send the operator round the loop.
+    expect(message).toContain("bumping `version` will not help");
+    expect(message).toContain("delete the token in the Hub UI");
+    expect(message).toContain("change `displayName`");
     // Crucially, it did not silently mint or rotate anything.
     expect(calls.map((c) => c.method)).toEqual(["GET"]);
+  });
+
+  test("bumping version does not rescue a lost value — it fails identically", async () => {
+    const { layer, calls } = stubHub(() => ({
+      status: 200,
+      body: accountWith(existingToken),
+    }));
+
+    const failure = await driveFailure(
+      serviceAccountTokenService.reconcile,
+      { news: { ...base, version: 2 }, olds: base, output: undefined },
+      layer,
+    );
+
+    expect((failure as { _tag: string })._tag).toBe("ConfigError");
+    // No rotate was attempted: rotating a token that live consumers may be
+    // using, during a routine deploy the operator did not ask to rotate, is
+    // worse than failing.
+    expect(calls.map((c) => c.method)).toEqual(["GET"]);
+  });
+
+  test("a stale tokenId mints a fresh token instead of adopting a same-named one", async () => {
+    // The token was deleted in the Hub UI and someone re-minted one with the
+    // same display name. Adopting it would pair the NEW token's id with the
+    // DELETED token's plaintext still sitting in state.
+    const { layer, calls } = stubHub((req) =>
+      req.method === "GET"
+        ? { status: 200, body: accountWith(existingToken) }
+        : {
+            status: 201,
+            body: {
+              token: "hf_fresh",
+              tokenInfo: { _id: "tok_9", displayName: "trainer", createdAt: "" },
+            },
+          },
+    );
+
+    const attrs: TokenAttrs = await drive(
+      serviceAccountTokenService.reconcile,
+      {
+        news: base,
+        olds: base,
+        output: {
+          tokenId: "tok_gone",
+          displayName: "trainer",
+          value: Redacted.make("hf_stale"),
+          version: 1,
+        },
+      },
+      layer,
+    );
+
+    expect(calls.map((c) => c.method)).toEqual(["GET", "POST"]);
+    expect(attrs.tokenId).toBe("tok_9");
+    expect(Redacted.value(attrs.value)).toBe("hf_fresh");
   });
 
   test("a non-hex repoId is rejected before any request", async () => {
@@ -347,6 +427,32 @@ describe("ServiceAccountToken reconcile", () => {
 
     expect((failure as { message: string }).message).toContain("at most 20");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("ServiceAccountToken delete", () => {
+  test("an absent token is a finished teardown", async () => {
+    const { layer } = stubHub(() => ({ status: 404, body: { error: "no" } }));
+    await drive(
+      serviceAccountTokenService.delete,
+      { olds: base, output: { tokenId: "tok_1" } },
+      layer,
+    );
+  });
+
+  test("a 403 fails the destroy rather than orphaning a live token", async () => {
+    // Swallowing this would drop the resource from state while the token
+    // stays live on the Hub with nothing left pointing at it — strictly
+    // worse than a failed destroy for a secret-bearing resource.
+    const { layer } = stubHub(() => ({ status: 403, body: { error: "nope" } }));
+
+    const failure = await driveFailure(
+      serviceAccountTokenService.delete,
+      { olds: base, output: { tokenId: "tok_1" } },
+      layer,
+    );
+
+    expect((failure as { _tag: string })._tag).toBe("Forbidden");
   });
 });
 

@@ -112,8 +112,11 @@ const toAttributes = (
  * `name`) and `region` are immutable; `private`, `cdn` and
  * `resourceGroupId` are synced in place.
  *
- * A `region` left unset is not treated as a change — the Hub picks a default
- * and the prop simply says "whatever it already is".
+ * A `region` left unset in `news` is not treated as a change — the prop then
+ * says "whatever it already is", and the Hub's choice stands. But going from
+ * unset to set *is* a change: the bucket may well have been placed in `us`,
+ * and `updateBucketSettings` cannot move it, so anything short of a replace
+ * would report success while the data stayed in the wrong jurisdiction.
  */
 export const diffBucketProps = (
   olds: BucketProps,
@@ -121,9 +124,7 @@ export const diffBucketProps = (
 ): { action: "replace" } | undefined =>
   olds.namespace !== news.namespace ||
   olds.name !== news.name ||
-  (news.region !== undefined &&
-    olds.region !== undefined &&
-    olds.region !== news.region)
+  (news.region !== undefined && news.region !== olds.region)
     ? { action: "replace" }
     : undefined;
 
@@ -188,13 +189,19 @@ export const bucketService = {
 
     // 3. Sync mutable settings against OBSERVED state, so an out-of-band
     //    change converges and a no-op deploy issues no writes.
+    //    Both fields are sent deliberately, even when only one differs: the
+    //    endpoint is a `PUT`, and whether it merges or replaces is
+    //    unconfirmed. Under replace semantics, omitting `private` while
+    //    changing `cdn` would silently revert a private bucket to the Hub
+    //    default — public. An unset prop falls back to the observed value, so
+    //    "leave as is" still means leave as is.
     if (!bucketSettingsMatch(news, observed)) {
       yield* updateBucketSettings({
         namespace: news.namespace,
         name: news.name,
         body: {
-          ...(news.private !== undefined ? { private: news.private } : {}),
-          ...(news.cdn !== undefined ? { cdnRegions: news.cdn } : {}),
+          private: news.private ?? observed.private ?? false,
+          cdnRegions: news.cdn ?? observed.cdnRegions ?? [],
         },
       });
     }
@@ -220,10 +227,14 @@ export const bucketService = {
     return toAttributes(news.namespace, news.name, final);
   }),
   delete: Effect.fn(function* ({ olds, output }) {
+    // `deleteBucket` already absorbs `NotFound` — an absent bucket is a
+    // finished teardown. A `Forbidden` is deliberately NOT absorbed: it would
+    // report the bucket destroyed while the bucket and all its data remain,
+    // and drop the only state pointing at it.
     yield* deleteBucket({
       namespace: output.namespace ?? olds.namespace,
       name: output.name ?? olds.name,
-    }).pipe(Effect.catchTag("Forbidden", () => Effect.void));
+    });
   }),
   read: Effect.fn(function* ({ olds, output }) {
     const namespace = output?.namespace ?? olds?.namespace;

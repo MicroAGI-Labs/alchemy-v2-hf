@@ -6,7 +6,7 @@ import {
   diffBucketProps,
 } from "../../src/Resources/Bucket.ts";
 import { stubHub } from "../support.ts";
-import { drive } from "./lifecycle.ts";
+import { drive, driveFailure } from "./lifecycle.ts";
 
 const NS = "MicroAGI-Labs";
 const HEX = "6a6f8f4083f1c297d4dbb0d7";
@@ -50,8 +50,22 @@ describe("Bucket diff", () => {
     ).toEqual({ action: "replace" });
   });
 
-  test("adding a region to a bucket that never declared one does not replace", () => {
-    expect(diffBucketProps(base, { ...base, region: "eu" })).toBeUndefined();
+  test("adding a region to a bucket that never declared one replaces", () => {
+    // The Hub picked the original region (quite possibly `us`) and
+    // `PUT .../settings` cannot move data between regions, so treating this
+    // as a no-op would report success with the data in the wrong
+    // jurisdiction.
+    expect(diffBucketProps(base, { ...base, region: "eu" })).toEqual({
+      action: "replace",
+    });
+  });
+
+  test("leaving region unset on both sides still does not replace", () => {
+    expect(diffBucketProps(base, { ...base, private: false })).toBeUndefined();
+  });
+
+  test("dropping the region prop is not a change — it means 'whatever it is'", () => {
+    expect(diffBucketProps({ ...base, region: "eu" }, base)).toBeUndefined();
   });
 });
 
@@ -168,7 +182,37 @@ describe("Bucket reconcile", () => {
 
     const put = calls.find((c) => c.method === "PUT");
     expect(put?.path).toBe(`/api/buckets/${NS}/datasets/settings`);
-    expect(put?.body).toEqual({ private: true });
+    // The full settings body goes out, not just the differing field: the
+    // endpoint is a PUT and its merge semantics are unconfirmed.
+    expect(put?.body).toEqual({ private: true, cdnRegions: [] });
+  });
+
+  test("a cdn-only change still sends `private`, so a PUT cannot make the bucket public", async () => {
+    const { layer, calls } = stubHub((req) =>
+      req.method === "GET"
+        ? { status: 200, body: detail({ private: true, cdnRegions: [] }) }
+        : { status: 200, body: {} },
+    );
+
+    await drive(
+      bucketService.reconcile,
+      {
+        // `private` deliberately unset: "leave as is" must survive the PUT.
+        news: {
+          namespace: NS,
+          name: "datasets",
+          cdn: [{ provider: "gcp", region: "eu" }],
+        },
+        olds: base,
+        output: undefined,
+      },
+      layer,
+    );
+
+    expect(calls.find((c) => c.method === "PUT")?.body).toEqual({
+      private: true,
+      cdnRegions: [{ provider: "gcp", region: "eu" }],
+    });
   });
 
   test("attaching and detaching a resource group", async () => {
@@ -199,6 +243,35 @@ describe("Bucket reconcile", () => {
     expect(
       detach.calls.find((c) => c.path.endsWith("/resource-group"))?.body,
     ).toEqual({ resourceGroupId: null });
+  });
+});
+
+describe("Bucket delete", () => {
+  const output = {
+    bucketId: HEX,
+    fullName: `${NS}/datasets`,
+    namespace: NS,
+    name: "datasets",
+    url: "u",
+  };
+
+  test("an absent bucket is a finished teardown", async () => {
+    const { layer } = stubHub(() => ({ status: 404, body: { error: "no" } }));
+    await drive(bucketService.delete, { olds: base, output }, layer);
+  });
+
+  test("a 403 fails the destroy rather than reporting deleted data as gone", async () => {
+    // Swallowing this would drop the bucket from state while the bucket AND
+    // ALL ITS DATA remain live on the Hub.
+    const { layer } = stubHub(() => ({ status: 403, body: { error: "nope" } }));
+
+    const failure = await driveFailure(
+      bucketService.delete,
+      { olds: base, output },
+      layer,
+    );
+
+    expect((failure as { _tag: string })._tag).toBe("Forbidden");
   });
 });
 

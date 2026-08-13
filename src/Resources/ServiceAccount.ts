@@ -176,8 +176,10 @@ export const serviceAccountService = {
       organization: output.organization ?? olds.organization,
       serviceAccountId: output.id,
     }).pipe(
+      // `NotFound` is idempotent teardown. `Forbidden` is not absorbed: a 403
+      // would otherwise drop the account (and every token it owns) from state
+      // while it stays live on the Hub, unreferenced and unrevokable.
       Effect.catchTag("NotFound", () => Effect.void),
-      Effect.catchTag("Forbidden", () => Effect.void),
     );
   }),
   read: Effect.fn(function* ({ output, olds }) {

@@ -1,7 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
+import { DecodeError } from "../Errors.ts";
 import type { ConfigError, HubError } from "../Errors.ts";
-import { HubClient } from "../Http/Client.ts";
+import { HubClient, type HubResponse } from "../Http/Client.ts";
 import type {
   CreateServiceAccountBody,
   CreateTokenBody,
@@ -144,12 +145,16 @@ export const createToken = (input: {
   Effect.gen(function* () {
     yield* validateTokenInput(input.body);
     const client = yield* HubClient;
-    const issued = yield* client.json<TokenIssued>({
+    const path = tokensPath(input.organization, input.serviceAccountId);
+    const response = yield* client.request({
       method: "POST",
-      path: tokensPath(input.organization, input.serviceAccountId),
+      path,
       body: input.body,
     });
-    return toIssuedToken(issued);
+    return yield* toIssuedToken(response, {
+      method: "POST",
+      url: `${client.endpoint}${path}`,
+    });
   });
 
 /**
@@ -191,11 +196,12 @@ export const rotateToken = (input: {
 }): Effect.Effect<IssuedToken, HubError, HubClient> =>
   Effect.gen(function* () {
     const client = yield* HubClient;
-    const issued = yield* client.json<TokenIssued>({
+    const path = `${tokenPath(input.organization, input.serviceAccountId, input.tokenId)}/rotate`;
+    const response = yield* client.request({ method: "POST", path });
+    return yield* toIssuedToken(response, {
       method: "POST",
-      path: `${tokenPath(input.organization, input.serviceAccountId, input.tokenId)}/rotate`,
+      url: `${client.endpoint}${path}`,
     });
-    return toIssuedToken(issued);
   });
 
 /**
@@ -224,8 +230,12 @@ export const deleteToken = (input: {
 
 /**
  * Find a token's metadata on a service account. There is no list-tokens
- * endpoint, so this reads the account and scans `accessTokens` — by `_id`
- * first, falling back to `displayName` for recovery when the id was lost.
+ * endpoint, so this reads the account and scans `accessTokens`.
+ *
+ * Matching is by `_id` when one is supplied, and **only** then: a
+ * `displayName` scan runs when no id is known, which is exactly the
+ * cold-recovery / first-create case it exists for. A supplied-but-unmatched
+ * id means the token is gone, not that a same-named one should be adopted.
  *
  * The result never contains the plaintext value; the Hub does not store one
  * it can hand back.
@@ -242,10 +252,15 @@ export const findToken = (input: {
   }).pipe(
     Effect.map((account) => {
       const tokens = account.accessTokens ?? [];
-      const byId = input.tokenId
-        ? tokens.find((token) => token._id === input.tokenId)
-        : undefined;
-      if (byId) return byId;
+      // A supplied id is authoritative: if it does not match, the token this
+      // resource owns is GONE, and any same-named token on the account is a
+      // DIFFERENT token whose plaintext nobody holds. Falling back to the
+      // name here would let the reconciler pair the id of a freshly re-minted
+      // token with the value of the deleted one and persist that as state —
+      // a credential that looks valid and fails at use time.
+      if (input.tokenId) {
+        return tokens.find((token) => token._id === input.tokenId);
+      }
       return input.displayName
         ? tokens.find((token) => token.displayName === input.displayName)
         : undefined;
@@ -263,16 +278,50 @@ export type IssuedToken = {
 };
 
 /**
- * Wrap a raw `{ token, tokenInfo }` payload, redacting the value at the
+ * Wrap a raw `{ token, tokenInfo }` response, redacting the value at the
  * boundary so nothing downstream ever handles it in the clear.
+ *
+ * Fails with {@link DecodeError} when either half is missing rather than
+ * substituting a placeholder. An empty `tokenId` is not a cosmetic defect:
+ * it is persisted into Alchemy state, after which {@link findToken} silently
+ * degrades to `displayName` matching and `deleteToken` issues
+ * `DELETE .../tokens/` — a `404` the reconciler treats as already-deleted, so
+ * the token is **never revoked**. Better to fail the deploy at the response
+ * that produced it.
  *
  * @internal
  */
-export const toIssuedToken = (issued: TokenIssued): IssuedToken => ({
-  tokenId: issued.tokenInfo?._id ?? "",
-  tokenInfo: issued.tokenInfo,
-  value: Redacted.make(issued.token),
-});
+export const toIssuedToken = (
+  response: HubResponse,
+  context: { readonly method: string; readonly url: string },
+): Effect.Effect<IssuedToken, DecodeError> => {
+  const issued = (response.body ?? {}) as Partial<TokenIssued>;
+  const tokenInfo = issued.tokenInfo;
+  const token = issued.token;
+  if (
+    typeof token !== "string" ||
+    token.length === 0 ||
+    tokenInfo === undefined ||
+    typeof tokenInfo._id !== "string" ||
+    tokenInfo._id.length === 0
+  ) {
+    return Effect.fail(
+      new DecodeError({
+        status: response.status,
+        method: context.method,
+        url: context.url,
+        message:
+          `${context.method} ${context.url} answered ${response.status} but the body was not a ` +
+          `token issuance: expected a non-empty \`token\` and \`tokenInfo._id\`.`,
+      }),
+    );
+  }
+  return Effect.succeed({
+    tokenId: tokenInfo._id,
+    tokenInfo,
+    value: Redacted.make(token),
+  });
+};
 
 /**
  * Normalize a create response onto the `get`/`list` shape, papering over the

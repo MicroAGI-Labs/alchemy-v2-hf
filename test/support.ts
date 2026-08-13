@@ -3,6 +3,7 @@ import * as Layer from "effect/Layer";
 import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientResponse from "effect/unstable/http/HttpClientResponse";
 import { fromToken } from "../src/Auth/Credentials.ts";
+import type { ConfigError } from "../src/Errors.ts";
 import { fromStatus, messageFromBody } from "../src/Errors.ts";
 import {
   HubClient,
@@ -79,6 +80,7 @@ export const stubHub = (
   const layer = Layer.succeed(HubClient, {
     request,
     json: (req: HubRequest) => request(req).pipe(Effect.map((r) => r.body)),
+    endpoint: "https://huggingface.co",
   } as unknown as HubClient["Service"]);
 
   return { layer, calls };
@@ -103,7 +105,9 @@ export const stubHttp = (
     index: number,
   ) => { status: number; body?: string },
 ): {
-  layer: Layer.Layer<HubClient>;
+  // `fromToken` validates its endpoint, so the composed layer carries a
+  // `ConfigError` in its error channel rather than `never`.
+  layer: Layer.Layer<HubClient, ConfigError>;
   calls: Array<RecordedHttpCall>;
 } => {
   const calls: Array<RecordedHttpCall> = [];
@@ -142,7 +146,8 @@ export const stubHttp = (
 };
 
 /** Run an Effect against a stub layer, failing the test on an unexpected error. */
-export const runStub = <A, E>(
+export const runStub = <A, E, LE>(
   effect: Effect.Effect<A, E, HubClient>,
-  layer: Layer.Layer<HubClient>,
-): Promise<A> => Effect.runPromise(effect.pipe(Effect.provide(layer)) as Effect.Effect<A, E>);
+  layer: Layer.Layer<HubClient, LE>,
+): Promise<A> =>
+  Effect.runPromise(effect.pipe(Effect.provide(layer)) as Effect.Effect<A, E>);

@@ -5,7 +5,7 @@ import {
   type ServiceAccountProps,
 } from "../../src/Resources/ServiceAccount.ts";
 import { stubHub } from "../support.ts";
-import { drive } from "./lifecycle.ts";
+import { drive, driveFailure } from "./lifecycle.ts";
 
 const ORG = "MicroAGI-Labs";
 const SA = "6a6f8f4083f1c297d4dbb0d7";
@@ -122,6 +122,29 @@ describe("ServiceAccount reconcile", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]!.method).toBe("GET");
     expect(attrs.id).toBe(SA);
+  });
+});
+
+describe("ServiceAccount delete", () => {
+  const output = { id: SA, organization: ORG, name: "trainer" };
+
+  test("an absent account is a finished teardown", async () => {
+    const { layer } = stubHub(() => ({ status: 404, body: { error: "no" } }));
+    await drive(serviceAccountService.delete, { olds: base, output }, layer);
+  });
+
+  test("a 403 fails the destroy rather than orphaning the account", async () => {
+    // The account and every token it owns would stay live on the Hub with
+    // nothing in state left pointing at them.
+    const { layer } = stubHub(() => ({ status: 403, body: { error: "nope" } }));
+
+    const failure = await driveFailure(
+      serviceAccountService.delete,
+      { olds: base, output },
+      layer,
+    );
+
+    expect((failure as { _tag: string })._tag).toBe("Forbidden");
   });
 });
 
