@@ -1,0 +1,69 @@
+{
+  "name": "@microagi/alchemy-hf",
+  "version": "0.1.0",
+  "description": "Hugging Face provider for Alchemy v2 (Effect-based IaC). Resources for organization service accounts, service-account tokens (create/patch/rotate with the plaintext value held redacted in state), and Hub buckets.",
+  "keywords": [
+    "alchemy",
+    "alchemy-effect",
+    "iac",
+    "infrastructure",
+    "effect",
+    "effect-ts",
+    "huggingface",
+    "hugging-face",
+    "hf",
+    "hub"
+  ],
+  "homepage": "https://github.com/MicroAGI-Labs/alchemy-v2-hf#readme",
+  "bugs": {
+    "url": "https://github.com/MicroAGI-Labs/alchemy-v2-hf/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MicroAGI-Labs/alchemy-v2-hf.git"
+  },
+  "license": "Apache-2.0",
+  "author": "MicroAGI Labs",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "lib",
+    "src",
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "bun": "./src/index.ts",
+      "import": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/Client/index.d.ts",
+      "bun": "./src/Client/index.ts",
+      "import": "./lib/Client/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf lib",
+    "test": "CI=1 bun test",
+    "test:watch": "CI=1 bun test --watch",
+    "prepublishOnly": "bun run clean && bun run build"
+  },
+  "peerDependencies": {
+    "alchemy": ">=2.0.0-beta.65",
+    "effect": ">=4.0.0-beta.100 || >=4.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "latest",
+    "alchemy": "workspace:*",
+    "effect": ">=4.0.0-beta.100 || >=4.0.0",
+    "typescript": "^7.0.2"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
