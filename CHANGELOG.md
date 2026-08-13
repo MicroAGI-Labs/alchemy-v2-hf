@@ -4,6 +4,23 @@ All notable changes to `@microagi/alchemy-hf`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this package
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.3.0 — 2026-08-13
+
+### Added
+
+- **`providers({ credentials })`** — supply your own `Credentials` Layer
+  instead of the default env-backed one.
+
+  The bundle satisfies `Credentials` internally with `Layer.provideMerge`, so
+  a Layer provided *around* `providers()` is shadowed rather than honoured.
+  There was therefore no way to source the admin token from anywhere but the
+  process environment. Combined with `credentialsFromToken`'s `Effect` token
+  source (0.2.0), this is the seam for reading it out of the consuming
+  stack's own IaC state or a secret manager, still lazily and still memoized.
+
+  Purely additive: omitting the option keeps the `fromEnv(options)` behaviour
+  byte for byte.
+
 ## 0.2.0 — 2026-08-13
 
 ### Changed — BREAKING
