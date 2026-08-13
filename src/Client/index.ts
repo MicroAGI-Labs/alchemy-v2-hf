@@ -45,6 +45,7 @@ export {
   fromToken as credentialsFromToken,
   type HuggingFaceCredentials,
   normalizeEndpoint,
+  type TokenSource,
 } from "../Auth/Credentials.ts";
 
 export {

@@ -1,4 +1,5 @@
 import * as Config from "effect/Config";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -23,13 +24,30 @@ export const DEFAULT_TOKEN_ENV_VAR = "HF_ADMIN_TOKEN";
  * The token stays a `Redacted<string>` end-to-end — it is only unwrapped
  * inside `HttpClientRequest.bearerToken`, which formats the header without
  * ever exposing the value to a logger or an error message.
+ *
+ * `token` is an **Effect, not a value**, and that is deliberate. Alchemy
+ * builds the whole `providers:` Layer eagerly when a stack starts, before it
+ * knows whether any Hugging Face resource will actually be touched. With an
+ * eagerly-resolved token, a colleague running a routine `plan` — where every
+ * HF resource is a `noop` — had to hold an org-admin token they have no
+ * business needing, or the run died at Layer construction. Deferring the read
+ * to the moment a request is issued moves the failure from *build* to *use*.
+ *
+ * The Effect is memoized by its producer ({@link fromEnv} / {@link fromToken}),
+ * so a deploy touching several HF resources resolves it once.
  */
 export type HuggingFaceCredentials = {
-  /** Organization admin token, redacted. */
-  readonly token: Redacted.Redacted<string>;
+  /**
+   * Resolves the organization admin token, redacted. Fails with a
+   * {@link ConfigError} naming the environment variable when it is absent.
+   */
+  readonly token: Effect.Effect<Redacted.Redacted<string>, ConfigError>;
   /**
    * Hub base URL. Defaults to `https://huggingface.co`; override for a
    * self-hosted Enterprise Hub deployment.
+   *
+   * Unlike the token this stays eager: it has a default and cannot fail in a
+   * way an operator can only discover at request time.
    */
   readonly endpoint: string;
 };
@@ -66,24 +84,41 @@ export type FromEnvOptions = {
  * environment (via Effect's `Config`, so an alternate `ConfigProvider` works
  * too).
  *
+ * **Building this Layer never fails on a missing token.** The read is
+ * deferred into the `token` Effect (see {@link HuggingFaceCredentials}) and
+ * memoized with `Effect.cached`, so the variable is consulted the first time
+ * a request is actually issued and at most once per Layer instance. A stack
+ * whose Hugging Face resources are all `noop` therefore needs no token at
+ * all.
+ *
  * Failure is a typed {@link ConfigError} rather than a defect: a missing
  * token is a user-fixable configuration problem, and the message names the
- * variable plus the scope the token needs.
+ * variable plus the scope the token needs. The endpoint stays eager — it has
+ * a default, and a malformed one is worth rejecting up front.
  */
 export const fromEnv = (options?: FromEnvOptions) =>
   Layer.effect(
     Credentials,
     Effect.gen(function* () {
       const envVar = options?.env ?? DEFAULT_TOKEN_ENV_VAR;
-      const token = yield* Config.redacted(envVar).pipe(
-        Effect.mapError(
-          () =>
-            new ConfigError({
-              message:
-                `Hugging Face admin token not found: set ${envVar} to an organization ` +
-                `admin token with the \`org.serviceAccounts.write\` permission ` +
-                `(Settings → Organization → Tokens on an Enterprise org).`,
-            }),
+      // Pin the `ConfigProvider` that is in scope where the Layer is built.
+      // Without this the deferred read would resolve against whatever
+      // provider happens to be ambient at *request* time — i.e. the default
+      // environment provider, silently ignoring a caller that wired an
+      // alternate `ConfigProvider` around the Layer.
+      const configProvider = yield* ConfigProvider.ConfigProvider;
+      const token = yield* Effect.cached(
+        Config.redacted(envVar).pipe(
+          Effect.provideService(ConfigProvider.ConfigProvider, configProvider),
+          Effect.mapError(
+            () =>
+              new ConfigError({
+                message:
+                  `Hugging Face admin token not found: set ${envVar} to an organization ` +
+                  `admin token with the \`org.serviceAccounts.write\` permission ` +
+                  `(Settings → Organization → Tokens on an Enterprise org).`,
+              }),
+          ),
         ),
       );
       const endpointVar = options?.endpointEnv ?? "HF_ENDPOINT";
@@ -97,26 +132,58 @@ export const fromEnv = (options?: FromEnvOptions) =>
     }),
   );
 
+/** A token supplied directly, or an Effect that resolves one on demand. */
+export type TokenSource =
+  | Redacted.Redacted<string>
+  | string
+  | Effect.Effect<Redacted.Redacted<string> | string, ConfigError>;
+
 /**
- * Build a {@link Credentials} Layer from a token already in hand. Useful for
- * tests and for stacks that source the token from another resource (e.g. a
- * `SeededSecret`) rather than from the ambient environment.
+ * Build a {@link Credentials} Layer from a token already in hand — or from an
+ * Effect that produces one.
+ *
+ * The Effect form is the seam for sourcing the token from somewhere other
+ * than the ambient environment (Alchemy state, a `SeededSecret`, a secret
+ * manager) without the read happening at Layer-build time. It is memoized
+ * with `Effect.cached` exactly as {@link fromEnv} does, so it runs at most
+ * once per Layer instance no matter how many resources reconcile.
  */
-export const fromToken = (
-  token: Redacted.Redacted<string> | string,
-  endpoint = DEFAULT_ENDPOINT,
-) =>
+export const fromToken = (token: TokenSource, endpoint = DEFAULT_ENDPOINT) =>
   Layer.effect(
     Credentials,
-    Effect.map(
-      normalizeEndpoint(endpoint),
-      (normalized) =>
-        ({
-          token: Redacted.isRedacted(token) ? token : Redacted.make(token),
-          endpoint: normalized,
-        }) satisfies HuggingFaceCredentials,
-    ),
+    Effect.gen(function* () {
+      const normalized = yield* normalizeEndpoint(endpoint);
+      const resolve = Effect.isEffect(token)
+        ? yield* Effect.cached(Effect.map(token, redact))
+        : Effect.succeed(redact(token));
+      return {
+        token: resolve,
+        endpoint: normalized,
+      } satisfies HuggingFaceCredentials;
+    }),
   );
+
+/** @internal */
+const redact = (
+  token: Redacted.Redacted<string> | string,
+): Redacted.Redacted<string> =>
+  Redacted.isRedacted(token) ? token : Redacted.make(token);
+
+/**
+ * Drop trailing `/` characters.
+ *
+ * Deliberately a loop rather than `.replace(/\/+$/, "")`: that pattern is
+ * anchored only at the end, so the engine retries from every start position
+ * and degrades to O(n²) on a value that is mostly slashes (CodeQL
+ * `js/polynomial-redos`). Same result, linear, no backtracking.
+ *
+ * @internal
+ */
+const stripTrailingSlashes = (value: string): string => {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47 /* "/" */) end -= 1;
+  return value.slice(0, end);
+};
 
 /**
  * Strip trailing slashes so path concatenation never produces `//api/...`,
@@ -138,7 +205,7 @@ export const normalizeEndpoint = (
   /** Name used in the error message — an env var, or the parameter. */
   source = "endpoint",
 ): Effect.Effect<string, ConfigError> => {
-  const trimmed = endpoint.trim().replace(/\/+$/, "");
+  const trimmed = stripTrailingSlashes(endpoint.trim());
   if (trimmed.length === 0) return Effect.succeed(DEFAULT_ENDPOINT);
 
   const fail = Effect.fail(

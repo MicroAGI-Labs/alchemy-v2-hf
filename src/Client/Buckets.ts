@@ -81,7 +81,7 @@ export const createBucket = (input: {
 export const getBucket = (input: {
   namespace: string;
   name: string;
-}): Effect.Effect<BucketDetail, HubError, HubClient> =>
+}): Effect.Effect<BucketDetail, HubError | ConfigError, HubClient> =>
   Effect.gen(function* () {
     const client = yield* HubClient;
     return yield* client.json<BucketDetail>({
@@ -94,7 +94,11 @@ export const getBucket = (input: {
 export const findBucket = (input: {
   namespace: string;
   name: string;
-}): Effect.Effect<BucketDetail | undefined, HubError, HubClient> =>
+}): Effect.Effect<
+  BucketDetail | undefined,
+  HubError | ConfigError,
+  HubClient
+> =>
   getBucket(input).pipe(
     Effect.catchTag("NotFound", () =>
       Effect.succeed(undefined as BucketDetail | undefined),
@@ -105,7 +109,11 @@ export const findBucket = (input: {
 export const listBuckets = (input: {
   namespace: string;
   search?: string;
-}): Effect.Effect<ReadonlyArray<BucketDetail>, HubError, HubClient> =>
+}): Effect.Effect<
+  ReadonlyArray<BucketDetail>,
+  HubError | ConfigError,
+  HubClient
+> =>
   Effect.gen(function* () {
     const client = yield* HubClient;
     const body = yield* client.json<ReadonlyArray<BucketDetail>>({
@@ -126,7 +134,7 @@ export const updateBucketSettings = (input: {
   namespace: string;
   name: string;
   body: BucketSettingsBody;
-}): Effect.Effect<void, HubError, HubClient> =>
+}): Effect.Effect<void, HubError | ConfigError, HubClient> =>
   Effect.gen(function* () {
     const client = yield* HubClient;
     yield* client.request({
@@ -141,7 +149,7 @@ export const setBucketResourceGroup = (input: {
   namespace: string;
   name: string;
   resourceGroupId: string | null;
-}): Effect.Effect<void, HubError, HubClient> =>
+}): Effect.Effect<void, HubError | ConfigError, HubClient> =>
   Effect.gen(function* () {
     const client = yield* HubClient;
     yield* client.request({
@@ -155,7 +163,7 @@ export const setBucketResourceGroup = (input: {
 export const deleteBucket = (input: {
   namespace: string;
   name: string;
-}): Effect.Effect<void, HubError, HubClient> =>
+}): Effect.Effect<void, HubError | ConfigError, HubClient> =>
   Effect.gen(function* () {
     const client = yield* HubClient;
     yield* client

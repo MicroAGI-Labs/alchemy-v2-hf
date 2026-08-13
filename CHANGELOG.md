@@ -4,6 +4,42 @@ All notable changes to `@microagi/alchemy-hf`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this package
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0 — 2026-08-13
+
+### Changed — BREAKING
+
+- **`Credentials` resolves the admin token lazily.**
+  `HuggingFaceCredentials.token` is now
+  `Effect<Redacted<string>, ConfigError>` instead of `Redacted<string>`.
+
+  Alchemy builds the whole `providers:` Layer eagerly when a stack starts, so
+  an eagerly-read token failed **every** `plan` and `deploy` — including runs
+  where all Hugging Face resources were `noop` and no request was ever going
+  to be made. Colleagues had to hold an organization-admin token to run a
+  read-only plan. The read now happens inside the request path, so the
+  failure surfaces at *use* rather than at *build*.
+
+  The Effect is memoized (`Effect.cached`) by both `fromEnv` and `fromToken`,
+  so a deploy touching several HF resources reads the configuration once.
+  `fromEnv` also pins the `ConfigProvider` that was in scope when the Layer
+  was built, so an alternate provider is still honoured by the deferred read.
+
+  Migration: anything that consumed `credentials.token` as a value now
+  `yield*`s it. `HubClient.request` / `HubClient.json` — and therefore every
+  client operation — carry `ConfigError` in their error channel alongside
+  `HubError`.
+
+  `endpoint` is unchanged and still eager: it has a default and a malformed
+  one is worth rejecting up front.
+
+### Added
+
+- **`fromToken` accepts an Effect** (`TokenSource`), not just a
+  `Redacted<string> | string`. This is the seam for sourcing the token from
+  Alchemy state or a secret manager without the read happening at Layer-build
+  time; it is memoized the same way `fromEnv` is. Nothing in this release
+  wires state in.
+
 ## 0.1.0 — 2026-08-13
 
 Initial release.

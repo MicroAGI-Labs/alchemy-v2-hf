@@ -41,6 +41,24 @@ The token is held as `Redacted<string>` from the moment it is read until `HttpCl
 
 Set `HF_ENDPOINT` to point at a self-hosted Enterprise Hub; it defaults to `https://huggingface.co`.
 
+### The token is resolved lazily (breaking in 0.2.0)
+
+`HuggingFaceCredentials.token` is an `Effect<Redacted<string>, ConfigError>`, **not** a `Redacted<string>`. Alchemy builds the whole `providers:` Layer eagerly when a stack starts, before it knows whether any Hugging Face resource will be touched, so an eagerly-read token failed *every* `plan` and `deploy` — including runs where all HF resources were `noop`. A colleague previewing an unrelated change had to hold an organization-admin token to see a plan of nothing.
+
+The read now happens inside the request path:
+
+- **Building the provider Layer with the variable absent succeeds.** A stack whose HF resources are all `noop` never needs a token.
+- **A missing token fails the operation that needs it**, with the same `ConfigError` message as before.
+- The Effect is memoized with `Effect.cached`, so a deploy touching several HF resources reads the configuration once, and `fromEnv` pins the `ConfigProvider` in scope at build time so an alternate provider is still honoured.
+- `HubClient.request` / `HubClient.json` — and therefore every client operation — carry `ConfigError` in their error channel alongside `HubError`.
+- `endpoint` stays eager: it has a default and a malformed one is worth rejecting up front.
+
+Migrating from 0.1.x: `yield* credentials.token` where you previously read the field.
+
+`credentialsFromToken` accepts a `Redacted<string>`, a plain `string`, **or an Effect** that yields either — the seam for feeding the token from Alchemy state or a secret manager rather than the environment, still without a build-time read.
+
+There is deliberately **no `HF_TOKEN` fallback**: an inherited researcher token must never drive infrastructure.
+
 ### Prerequisite: an Enterprise organization
 
 Organization service accounts are an **Enterprise Hub** feature. On any other plan the endpoints answer `403`, which this package surfaces as a `Forbidden` error. Buckets likewise require the feature to be enabled for the namespace.
