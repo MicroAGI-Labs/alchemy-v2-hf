@@ -57,6 +57,12 @@ Migrating from 0.1.x: `yield* credentials.token` where you previously read the f
 
 `credentialsFromToken` accepts a `Redacted<string>`, a plain `string`, **or an Effect** that yields either — the seam for feeding the token from Alchemy state or a secret manager rather than the environment, still without a build-time read.
 
+The provider bundle satisfies `Credentials` internally, so a Layer provided *around* `providers()` is shadowed. Pass it in instead:
+
+```ts
+providers({ credentials: credentialsFromToken(readTokenFromWherever) })
+```
+
 There is deliberately **no `HF_TOKEN` fallback**: an inherited researcher token must never drive infrastructure.
 
 ### Prerequisite: an Enterprise organization
