@@ -56,7 +56,7 @@ const tokenPath = (
 export const createServiceAccount = (input: {
   organization: string;
   body: CreateServiceAccountBody;
-}): Effect.Effect<ServiceAccountCreated, HubError, HubClient> =>
+}): Effect.Effect<ServiceAccountCreated, HubError | ConfigError, HubClient> =>
   Effect.gen(function* () {
     const client = yield* HubClient;
     return yield* client.json<ServiceAccountCreated>({
@@ -70,7 +70,7 @@ export const createServiceAccount = (input: {
 export const getServiceAccount = (input: {
   organization: string;
   serviceAccountId: string;
-}): Effect.Effect<ServiceAccountDetail, HubError, HubClient> =>
+}): Effect.Effect<ServiceAccountDetail, HubError | ConfigError, HubClient> =>
   Effect.gen(function* () {
     const client = yield* HubClient;
     return yield* client.json<ServiceAccountDetail>({
@@ -87,7 +87,11 @@ export const getServiceAccount = (input: {
  */
 export const listServiceAccounts = (input: {
   organization: string;
-}): Effect.Effect<ReadonlyArray<ServiceAccountSummary>, HubError, HubClient> =>
+}): Effect.Effect<
+  ReadonlyArray<ServiceAccountSummary>,
+  HubError | ConfigError,
+  HubClient
+> =>
   Effect.gen(function* () {
     const client = yield* HubClient;
     const body = yield* client.json<ReadonlyArray<ServiceAccountSummary>>({
@@ -104,7 +108,11 @@ export const listServiceAccounts = (input: {
 export const findServiceAccountByName = (input: {
   organization: string;
   name: string;
-}): Effect.Effect<ServiceAccountSummary | undefined, HubError, HubClient> =>
+}): Effect.Effect<
+  ServiceAccountSummary | undefined,
+  HubError | ConfigError,
+  HubClient
+> =>
   listServiceAccounts({ organization: input.organization }).pipe(
     Effect.map((accounts) =>
       accounts.find((account) => account.name === input.name),
@@ -115,7 +123,7 @@ export const findServiceAccountByName = (input: {
 export const deleteServiceAccount = (input: {
   organization: string;
   serviceAccountId: string;
-}): Effect.Effect<void, HubError, HubClient> =>
+}): Effect.Effect<void, HubError | ConfigError, HubClient> =>
   Effect.gen(function* () {
     const client = yield* HubClient;
     yield* client.request({
@@ -193,7 +201,7 @@ export const rotateToken = (input: {
   organization: string;
   serviceAccountId: string;
   tokenId: string;
-}): Effect.Effect<IssuedToken, HubError, HubClient> =>
+}): Effect.Effect<IssuedToken, HubError | ConfigError, HubClient> =>
   Effect.gen(function* () {
     const client = yield* HubClient;
     const path = `${tokenPath(input.organization, input.serviceAccountId, input.tokenId)}/rotate`;
@@ -215,7 +223,7 @@ export const deleteToken = (input: {
   organization: string;
   serviceAccountId: string;
   tokenId: string;
-}): Effect.Effect<void, HubError, HubClient> =>
+}): Effect.Effect<void, HubError | ConfigError, HubClient> =>
   Effect.gen(function* () {
     const client = yield* HubClient;
     yield* client.request({
@@ -245,7 +253,7 @@ export const findToken = (input: {
   serviceAccountId: string;
   tokenId?: string;
   displayName?: string;
-}): Effect.Effect<TokenInfo | undefined, HubError, HubClient> =>
+}): Effect.Effect<TokenInfo | undefined, HubError | ConfigError, HubClient> =>
   getServiceAccount({
     organization: input.organization,
     serviceAccountId: input.serviceAccountId,

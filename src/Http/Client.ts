@@ -5,6 +5,7 @@ import * as HttpClient from "effect/unstable/http/HttpClient";
 import * as HttpClientRequest from "effect/unstable/http/HttpClientRequest";
 import { Credentials } from "../Auth/Credentials.ts";
 import {
+  type ConfigError,
   DecodeError,
   fromStatus,
   type HubError,
@@ -54,11 +55,20 @@ export type HubResponse = {
  * the happy path never has to check `status`. The one place a status still
  * matters is bucket creation, where a `409` carries the existing bucket and
  * is caught deliberately.
+ *
+ * `ConfigError` is in the channel because the admin token is resolved lazily,
+ * at request time — see
+ * {@link import("../Auth/Credentials.ts").HuggingFaceCredentials}. A missing
+ * token surfaces here rather than at Layer construction.
  */
 export type HubClientService = {
-  readonly request: (req: HubRequest) => Effect.Effect<HubResponse, HubError>;
+  readonly request: (
+    req: HubRequest,
+  ) => Effect.Effect<HubResponse, HubError | ConfigError>;
   /** Same as `request`, but narrows the decoded body to `A`. */
-  readonly json: <A>(req: HubRequest) => Effect.Effect<A, HubError>;
+  readonly json: <A>(
+    req: HubRequest,
+  ) => Effect.Effect<A, HubError | ConfigError>;
   /** Resolved Hub base URL, for error messages and docs links. */
   readonly endpoint: string;
 };
@@ -86,8 +96,9 @@ export const buildUrl = (endpoint: string, req: HubRequest): string => {
  * Build a {@link HubClient} from the ambient `HttpClient` and
  * {@link Credentials}.
  *
- * The token is applied with `HttpClientRequest.bearerToken`, which accepts a
- * `Redacted` directly — the plaintext is never materialised in this module.
+ * The token is resolved per request (the credentials carry a memoized Effect,
+ * not a value) and applied with `HttpClientRequest.bearerToken`, which accepts
+ * a `Redacted` directly — the plaintext is never materialised in this module.
  */
 export const layer: Layer.Layer<
   HubClient,
@@ -99,11 +110,16 @@ export const layer: Layer.Layer<
     const http = yield* HttpClient.HttpClient;
     const credentials = yield* Credentials;
 
-    const request = (req: HubRequest): Effect.Effect<HubResponse, HubError> =>
+    const request = (
+      req: HubRequest,
+    ): Effect.Effect<HubResponse, HubError | ConfigError> =>
       Effect.gen(function* () {
         const url = buildUrl(credentials.endpoint, req);
+        // Resolved here, not at Layer build: a stack whose HF resources are
+        // all noop never reaches this line and so never needs a token.
+        const token = yield* credentials.token;
         let httpRequest = HttpClientRequest.make(req.method)(url).pipe(
-          HttpClientRequest.bearerToken(credentials.token),
+          HttpClientRequest.bearerToken(token),
           HttpClientRequest.acceptJson,
         );
         if (req.body !== undefined) {
@@ -171,7 +187,9 @@ export const layer: Layer.Layer<
         );
       });
 
-    const json = <A>(req: HubRequest): Effect.Effect<A, HubError> =>
+    const json = <A>(
+      req: HubRequest,
+    ): Effect.Effect<A, HubError | ConfigError> =>
       request(req).pipe(
         Effect.flatMap((response) =>
           response.body === undefined

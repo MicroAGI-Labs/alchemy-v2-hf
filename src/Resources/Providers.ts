@@ -46,10 +46,13 @@ export const providers = (options?: FromEnvOptions) =>
     ),
     Layer.provideMerge(hubClientLayer),
     Layer.provideMerge(fromEnv(options)),
-    // A missing or malformed admin token is a build-time configuration
-    // failure, not something a reconciler can recover from — same treatment
-    // as `AWS/Providers.ts` and the GCP provider. Resource lifecycle
-    // handlers still surface their own typed errors normally; this only
-    // affects Layer construction.
+    // Only a *malformed* `HF_ENDPOINT` can fail this Layer now: the admin
+    // token is resolved lazily, inside the request path, so a stack whose
+    // Hugging Face resources are all `noop` builds (and plans) without a
+    // token at all. A bad endpoint is still a build-time configuration
+    // failure no reconciler can recover from — same treatment as
+    // `AWS/Providers.ts` and the GCP provider. Resource lifecycle handlers
+    // surface their own typed errors, including the missing-token
+    // `ConfigError`, normally.
     Layer.orDie,
   );
