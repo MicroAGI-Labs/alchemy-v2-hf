@@ -29,6 +29,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   members carry `verifiedEmail` when it matches the organization's verified
   email domain.
 - `HubResponse.link`: the response's `Link` header.
+- `ServiceAccount`'s `user` attribute (its Hub username), for resource-group
+  membership.
 
 ## 0.3.0 — 2026-08-13
 

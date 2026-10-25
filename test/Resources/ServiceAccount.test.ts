@@ -64,7 +64,7 @@ describe("ServiceAccount reconcile", () => {
 
     expect(calls.map((c) => c.method)).toEqual(["GET", "POST"]);
     expect(calls[1]!.body).toEqual({ name: "trainer", description: "d" });
-    expect(attrs).toEqual({ id: SA, organization: ORG, name: "trainer" });
+    expect(attrs).toEqual({ id: SA, organization: ORG, name: "trainer", user: "u" });
   });
 
   test("an existing account of the same name is adopted rather than re-created", async () => {
@@ -162,7 +162,7 @@ describe("ServiceAccount read", () => {
     );
 
     // Owned: plain attributes, so the engine adopts silently.
-    expect(attrs).toEqual({ id: SA, organization: ORG, name: "trainer" });
+    expect(attrs).toEqual({ id: SA, organization: ORG, name: "trainer", user: "u" });
   });
 
   test("a name-only match is reported Unowned so --adopt is required", async () => {

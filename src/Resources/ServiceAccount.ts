@@ -61,6 +61,11 @@ export type ServiceAccount = Resource<
     organization: string;
     /** Account name. */
     name: string;
+    /**
+     * The account's Hub username (`user`): what a `ResourceGroup` member
+     * entry takes for a service account. Absent in state written before 0.4.0.
+     */
+    user?: string;
   },
   never,
   HF.Providers
@@ -77,6 +82,7 @@ const toAttributes = (
   id: account._id,
   organization,
   name: account.name,
+  ...(account.user ? { user: account.user } : {}),
 });
 
 /**
