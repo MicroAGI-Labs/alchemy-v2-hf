@@ -46,6 +46,8 @@ export type HubRequest = {
 export type HubResponse = {
   readonly status: number;
   readonly body: unknown;
+  /** The `Link` header, when the Hub paginates (`<url>; rel="next"`). */
+  readonly link?: string;
 };
 
 /**
@@ -170,7 +172,8 @@ export const layer: Layer.Layer<
         const body = parseJson(text);
 
         if (response.status >= 200 && response.status < 300) {
-          return { status: response.status, body } satisfies HubResponse;
+          const link = response.headers["link"];
+          return { status: response.status, body, ...(link ? { link } : {}) } satisfies HubResponse;
         }
 
         return yield* Effect.fail(

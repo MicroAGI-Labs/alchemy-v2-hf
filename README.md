@@ -1,6 +1,6 @@
 # @microagi/alchemy-hf
 
-Hugging Face provider for [Alchemy v2](https://v2.alchemy.run) — Effect-native Infrastructure-as-Code. Alchemy ships only AWS + Cloudflare providers out of the box; this package covers the Hugging Face Hub's organization service accounts, service-account tokens, and buckets.
+Hugging Face provider for [Alchemy v2](https://v2.alchemy.run) — Effect-native Infrastructure-as-Code. Alchemy ships only AWS + Cloudflare providers out of the box; this package covers the Hugging Face Hub's organization service accounts, service-account tokens, buckets, repositories and resource groups.
 
 Unlike [`@microagi/alchemy-gcp`](https://github.com/MicroAGI-Labs/alchemy-v2-gcp), there is no `@distilled.cloud/*` SDK for the Hub, so this package carries a small typed HTTP client of its own. It is built on `effect/unstable/http` (Effect v4 ships an `HttpClient` in-tree — `@effect/platform` is not involved), and every lifecycle handler returns an `Effect`, never a `Promise`.
 
@@ -57,6 +57,12 @@ Migrating from 0.1.x: `yield* credentials.token` where you previously read the f
 
 `credentialsFromToken` accepts a `Redacted<string>`, a plain `string`, **or an Effect** that yields either — the seam for feeding the token from Alchemy state or a secret manager rather than the environment, still without a build-time read.
 
+The provider bundle satisfies `Credentials` internally, so a Layer provided *around* `providers()` is shadowed. Pass it in instead:
+
+```ts
+providers({ credentials: credentialsFromToken(readTokenFromWherever) })
+```
+
 There is deliberately **no `HF_TOKEN` fallback**: an inherited researcher token must never drive infrastructure.
 
 ### Prerequisite: an Enterprise organization
@@ -64,6 +70,39 @@ There is deliberately **no `HF_TOKEN` fallback**: an inherited researcher token 
 Organization service accounts are an **Enterprise Hub** feature. On any other plan the endpoints answer `403`, which this package surfaces as a `Forbidden` error. Buckets likewise require the feature to be enabled for the namespace.
 
 ## Resources
+
+### `HuggingFace.Repo`
+
+A model, dataset or space. Created once with the visibility you ask for; **the
+visibility is never changed afterwards**: on an existing repo `private` is an
+assertion, and a mismatch fails the deploy instead of flipping it. Pair it with
+`RemovalPolicy.retain()` for data you must not lose on a `destroy`.
+
+```ts
+const registry = yield* HF.Repo("Registry", {
+  type: "dataset",
+  namespace: "MicroAGI-Labs",
+  name: "eh-registry",
+  private: true,
+  resourceGroupId: approvers.resourceGroupId,
+}).pipe(RemovalPolicy.retain());
+// registry.repoId -> the 24-hex `_id` for a token's `repoIds`
+```
+
+### `HuggingFace.ResourceGroup`
+
+A resource group (Team and Enterprise plans). `members` is the complete list:
+missing members are added, roles synced, everyone else removed; auto-join is
+kept off. A private repo in the group is reachable only by its members and the
+organization's admins.
+
+```ts
+const approvers = yield* HF.ResourceGroup("Approvers", {
+  organization: "MicroAGI-Labs",
+  name: "eh-registry-approvers",
+  members: [{ user: "alice", role: "write" }, { user: robotAccount.user, role: "read" }],
+});
+```
 
 ### `HuggingFace.ServiceAccount`
 

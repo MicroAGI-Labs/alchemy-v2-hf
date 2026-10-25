@@ -4,6 +4,49 @@ All notable changes to `@microagi/alchemy-hf`. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this package
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0 — 2026-10-25
+
+### Added
+
+- **`HuggingFace.Repo`**: a model, dataset or space repository, created with
+  `POST /api/repos/create` and re-read for its 24-hex `_id` (the `repoId`
+  attribute, what a token's `repoIds` takes). `resourceGroupId` is synced in
+  place. **Visibility is never changed**: `private` is the visibility at
+  creation and an assertion afterwards; an existing repo whose visibility
+  differs fails the deploy with a `ConfigError`, and no operation in the
+  package sends `private` or `visibility` to a settings endpoint.
+- **`HuggingFace.ResourceGroup`** (Team and Enterprise plans): `members` is
+  the complete list; a deploy adds the missing members, changes differing
+  roles and removes everyone else, and keeps auto-join off. Renames are
+  synced in place (the group is found by the id in state).
+- Client: `createRepo`, `getRepo`, `findRepo`, `setRepoResourceGroup`,
+  `deleteRepo`; `listResourceGroups`, `getResourceGroup`,
+  `findResourceGroupByName`, `createResourceGroup`, `updateResourceGroup`,
+  `setResourceGroupAutoJoin`, `addResourceGroupUsers`,
+  `setResourceGroupUserRole`, `removeResourceGroupUser`,
+  `deleteResourceGroup`, `planResourceGroupUsers`; and
+  `listOrganizationMembers` (every page, through the `Link` header), whose
+  members carry `verifiedEmail` when it matches the organization's verified
+  email domain.
+- `HubResponse.link`: the response's `Link` header.
+
+## 0.3.0 — 2026-08-13
+
+### Added
+
+- **`providers({ credentials })`** — supply your own `Credentials` Layer
+  instead of the default env-backed one.
+
+  The bundle satisfies `Credentials` internally with `Layer.provideMerge`, so
+  a Layer provided *around* `providers()` is shadowed rather than honoured.
+  There was therefore no way to source the admin token from anywhere but the
+  process environment. Combined with `credentialsFromToken`'s `Effect` token
+  source (0.2.0), this is the seam for reading it out of the consuming
+  stack's own IaC state or a secret manager, still lazily and still memoized.
+
+  Purely additive: omitting the option keeps the `fromEnv(options)` behaviour
+  byte for byte.
+
 ## 0.2.0 — 2026-08-13
 
 ### Changed — BREAKING
