@@ -8,6 +8,8 @@ import {
 import { ConfigError } from "../Errors.ts";
 import { layer as hubClientLayer } from "../Http/Client.ts";
 import { Bucket, BucketProvider } from "./Bucket.ts";
+import { Repo, RepoProvider } from "./Repo.ts";
+import { ResourceGroup, ResourceGroupProvider } from "./ResourceGroup.ts";
 import { ServiceAccount, ServiceAccountProvider } from "./ServiceAccount.ts";
 import {
   ServiceAccountToken,
@@ -67,11 +69,13 @@ export type ProvidersOptions = FromEnvOptions & {
 export const providers = (options?: ProvidersOptions) =>
   Layer.effect(
     Providers,
-    Provider.collection([Bucket, ServiceAccount, ServiceAccountToken]),
+    Provider.collection([Bucket, Repo, ResourceGroup, ServiceAccount, ServiceAccountToken]),
   ).pipe(
     Layer.provide(
       Layer.mergeAll(
         BucketProvider(),
+        RepoProvider(),
+        ResourceGroupProvider(),
         ServiceAccountProvider(),
         ServiceAccountTokenProvider(),
       ),

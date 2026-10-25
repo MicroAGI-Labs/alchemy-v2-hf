@@ -75,6 +75,8 @@ export {
 } from "../Errors.ts";
 
 export * from "./Buckets.ts";
+export * from "./Repos.ts";
+export * from "./ResourceGroups.ts";
 export * from "./ServiceAccounts.ts";
 export * from "./Types.ts";
 export {

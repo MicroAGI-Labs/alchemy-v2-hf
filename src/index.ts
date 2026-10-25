@@ -2,7 +2,7 @@
  * `@microagi/alchemy-hf` — Hugging Face provider for Alchemy v2.
  *
  * This entrypoint carries the Alchemy resources (`ServiceAccount`,
- * `ServiceAccountToken`, `Bucket`) plus the `providers()` bundle, and
+ * `ServiceAccountToken`, `Bucket`, `Repo`, `ResourceGroup`) plus the `providers()` bundle, and
  * re-exports the whole standalone client for convenience.
  *
  * A runtime consumer that must **not** pull in the Alchemy engine should
@@ -51,6 +51,8 @@ export {
 } from "./Errors.ts";
 
 export * from "./Client/Buckets.ts";
+export * from "./Client/Repos.ts";
+export * from "./Client/ResourceGroups.ts";
 export * from "./Client/ServiceAccounts.ts";
 export * from "./Client/Types.ts";
 export {

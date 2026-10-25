@@ -1,7 +1,7 @@
 {
   "name": "@microagi/alchemy-hf",
-  "version": "0.3.0",
-  "description": "Hugging Face provider for Alchemy v2 (Effect-based IaC). Resources for organization service accounts, service-account tokens (create/patch/rotate with the plaintext value held redacted in state), and Hub buckets.",
+  "version": "0.4.0",
+  "description": "Hugging Face provider for Alchemy v2 (Effect-based IaC). Resources for organization service accounts, service-account tokens (create/patch/rotate with the plaintext value held redacted in state), Hub buckets, repositories (created once, visibility never changed) and resource groups (exact membership).",
   "keywords": [
     "alchemy",
     "alchemy-effect",

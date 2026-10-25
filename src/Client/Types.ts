@@ -215,3 +215,104 @@ export type BucketSettingsBody = {
   private?: boolean;
   cdnRegions?: ReadonlyArray<BucketCdn>;
 };
+
+// ---------------------------------------------------------------------------
+// Repositories (models, datasets, spaces)
+// ---------------------------------------------------------------------------
+
+/** A Hub repository type that `POST /api/repos/create` handles. */
+export type RepoType = "model" | "dataset" | "space";
+
+/** The URL path segment of a repo type: `models`, `datasets`, `spaces`. */
+export const repoTypePath = (type: RepoType): string => `${type}s`;
+
+/**
+ * `POST /api/repos/create` request body. `type` is omitted for a model (the
+ * Hub's default). `private` is the visibility at creation; this package never
+ * changes it afterwards.
+ */
+export type CreateRepoBody = {
+  type?: "dataset" | "space";
+  name: string;
+  organization?: string;
+  private?: boolean;
+  resourceGroupId?: string;
+  /** spaces only */
+  sdk?: string;
+};
+
+/**
+ * `GET /api/{type}s/{namespace}/{name}?expand[]=resourceGroup` → `200`. As for
+ * buckets, **`_id`** is the 24-hex repo id a token's `repoIds` takes and
+ * **`id`** is the `namespace/name` string.
+ */
+export type RepoDetail = {
+  _id: string;
+  id: string;
+  author?: string;
+  private?: boolean;
+  gated?: false | "auto" | "manual";
+  sha?: string;
+  lastModified?: string;
+  resourceGroup?: { id?: string; name?: string; numUsers?: number } | null;
+};
+
+// ---------------------------------------------------------------------------
+// Resource groups and organization members
+// ---------------------------------------------------------------------------
+
+/**
+ * A member's role inside a resource group. `inherit` follows the member's
+ * organization role; `no_access` removes access to the group's repos.
+ */
+export type ResourceGroupRole = "read" | "contributor" | "write" | "admin";
+
+/** Every value of {@link ResourceGroupRole}, for runtime validation. */
+export const RESOURCE_GROUP_ROLES: ReadonlyArray<ResourceGroupRole> = ["read", "contributor", "write", "admin"];
+
+/** One member of a resource group, as the API takes and returns it. */
+export type ResourceGroupUser = {
+  /** the Hub username (a service account's `user`, too) */
+  user: string;
+  role: ResourceGroupRole;
+};
+
+/** `POST /api/organizations/{org}/resource-groups` request body. */
+export type CreateResourceGroupBody = {
+  name: string;
+  description?: string;
+  users?: ReadonlyArray<ResourceGroupUser>;
+  repos?: ReadonlyArray<{ name: string; type: RepoType }>;
+  autoJoin?: { enabled: boolean; role?: ResourceGroupRole };
+};
+
+/**
+ * `GET /api/organizations/{org}/resource-groups[/{id}]`. The Hub returns `id`
+ * (24-hex) for a resource group; `users` and `repos` may be omitted by the
+ * list endpoint, so {@link getResourceGroup} is the authoritative read.
+ */
+export type ResourceGroupDetail = {
+  id: string;
+  name: string;
+  description?: string;
+  users?: ReadonlyArray<ResourceGroupUser & { type?: string }>;
+  repos?: ReadonlyArray<{ name: string; type: RepoType }>;
+  autoJoin?: { enabled?: boolean; role?: string } | null;
+};
+
+/**
+ * One element of `GET /api/organizations/{org}/members`. `verifiedEmail` is
+ * filled in only for members whose email matches the organization's
+ * verified email domain (or an SSO matching domain); otherwise `null`.
+ */
+export type OrganizationMember = {
+  _id?: string;
+  user: string;
+  fullname?: string;
+  type?: string;
+  role?: string;
+  verifiedEmail?: string | null;
+  isExternalCollaborator?: boolean;
+  twoFaEnabled?: boolean;
+  resourceGroups?: ReadonlyArray<{ id: string; name?: string; role?: string }>;
+};

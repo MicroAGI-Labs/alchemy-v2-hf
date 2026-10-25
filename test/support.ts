@@ -38,6 +38,8 @@ export type RecordedCall = HubRequest;
 export type StubReply = {
   readonly status?: number;
   readonly body?: unknown;
+  /** a `Link` header (pagination) */
+  readonly link?: string;
 };
 
 /**
@@ -74,7 +76,7 @@ export const stubHub = (
           }),
         );
       }
-      return Effect.succeed({ status, body: reply.body } satisfies HubResponse);
+      return Effect.succeed({ status, body: reply.body, ...(reply.link ? { link: reply.link } : {}) } satisfies HubResponse);
     });
 
   const layer = Layer.succeed(HubClient, {
@@ -103,7 +105,7 @@ export const stubHttp = (
   handler: (
     call: RecordedHttpCall,
     index: number,
-  ) => { status: number; body?: string },
+  ) => { status: number; body?: string; link?: string },
 ): {
   // `fromToken` validates its endpoint, so the composed layer carries a
   // `ConfigError` in its error channel rather than `never`.
@@ -131,7 +133,7 @@ export const stubHttp = (
         request,
         new Response(reply.body ?? null, {
           status: reply.status,
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", ...(reply.link ? { link: reply.link } : {}) },
         }),
       );
     }),
